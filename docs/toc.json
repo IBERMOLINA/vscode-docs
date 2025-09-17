@@ -207,6 +207,7 @@
     "area": "nodejs",
     "topics": [
       ["Working with JavaScript", "/docs/nodejs/working-with-javascript"],
+      ["npm", "/docs/nodejs/npm"],
       ["Node.js Tutorial", "/docs/nodejs/nodejs-tutorial"],
       ["Node.js Debugging", "/docs/nodejs/nodejs-debugging"],
       ["Deploy Node.js Apps", "/docs/nodejs/nodejs-deployment"],
