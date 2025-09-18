@@ -19,24 +19,32 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Redis cache setup
-const redisClient = redis.createClient({
-  socket: {
-    host: process.env.REDIS_HOST || 'localhost',
-    port: process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379
-  }
-});
+let redisClient = null;
+try {
+  redisClient = redis.createClient({
+    socket: {
+      host: process.env.REDIS_HOST || 'localhost',
+      port: process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379
+    }
+  });
 
-redisClient.on('error', (err) => {
-  console.log('Redis Client Error', err);
-});
+  redisClient.on('error', (err) => {
+    console.log('Redis Client Error:', err);
+    console.log('Server will continue running without Redis cache');
+  });
+} catch (err) {
+  console.log('Redis initialization error:', err);
+  console.log('Server will continue running without Redis cache');
+}
 
 // MongoDB connection with optimizations
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/performance-demo', {
   maxPoolSize: 10, // Maintain up to 10 socket connections
   serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
   socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
-  bufferMaxEntries: 0, // Disable mongoose buffering
-  bufferCommands: false, // Disable mongoose buffering
+}).catch(err => {
+  console.log('MongoDB connection error:', err);
+  console.log('Server will continue running without database connection');
 });
 
 // Database schemas
@@ -62,6 +70,10 @@ const Product = mongoose.model('Product', productSchema);
 // Cache middleware
 const cache = (duration = 300) => {
   return async (req, res, next) => {
+    if (!redisClient) {
+      return next(); // Skip caching if Redis is not available
+    }
+    
     const key = `cache:${req.originalUrl}`;
     
     try {
@@ -274,11 +286,13 @@ app.use((error, req, res, next) => {
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down gracefully');
-  try {
-    // Await Redis quit (modern Redis clients support promises natively)
-    await redisClient.quit();
-  } catch (err) {
-    console.error('Error closing Redis client:', err);
+  if (redisClient) {
+    try {
+      // Await Redis quit (modern Redis clients support promises natively)
+      await redisClient.quit();
+    } catch (err) {
+      console.error('Error closing Redis client:', err);
+    }
   }
   try {
     await mongoose.connection.close();
