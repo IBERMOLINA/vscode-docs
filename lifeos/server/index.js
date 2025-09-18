@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const compression = require('compression');
 const helmet = require('helmet');
@@ -7,9 +8,23 @@ const redis = require('redis');
 const sharp = require('sharp');
 const multer = require('multer');
 const path = require('path');
+const GeminiService = require('./services/geminiService');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Initialize Gemini service if API key is provided
+let geminiService = null;
+if (process.env.GEMINI_API_KEY) {
+  try {
+    geminiService = new GeminiService(process.env.GEMINI_API_KEY);
+    console.log('Gemini service initialized successfully');
+  } catch (error) {
+    console.warn('Failed to initialize Gemini service:', error.message);
+  }
+} else {
+  console.warn('GEMINI_API_KEY not found in environment variables. Gemini features will be disabled.');
+}
 
 // Performance optimizations
 app.use(compression()); // Enable gzip compression
@@ -250,12 +265,138 @@ app.get('/api/search', cache(60), async (req, res) => {
   }
 });
 
+// Gemini AI endpoints
+app.post('/api/gemini/generate', async (req, res) => {
+  if (!geminiService) {
+    return res.status(503).json({ 
+      error: 'Gemini service not available. Please configure GEMINI_API_KEY.' 
+    });
+  }
+
+  try {
+    const { prompt } = req.body;
+    
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+
+    const response = await geminiService.generateContent(prompt);
+    res.json({ response });
+  } catch (error) {
+    console.error('Gemini generate error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/gemini/analyze-metrics', async (req, res) => {
+  if (!geminiService) {
+    return res.status(503).json({ 
+      error: 'Gemini service not available. Please configure GEMINI_API_KEY.' 
+    });
+  }
+
+  try {
+    const { metricsData } = req.body;
+    
+    if (!metricsData) {
+      return res.status(400).json({ error: 'Metrics data is required' });
+    }
+
+    const analysis = await geminiService.analyzeLifeMetrics(metricsData);
+    res.json({ analysis });
+  } catch (error) {
+    console.error('Gemini analyze metrics error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/gemini/reflection-questions', async (req, res) => {
+  if (!geminiService) {
+    return res.status(503).json({ 
+      error: 'Gemini service not available. Please configure GEMINI_API_KEY.' 
+    });
+  }
+
+  try {
+    const { context } = req.body;
+    const questions = await geminiService.generateReflectionQuestions(context || {});
+    res.json({ questions });
+  } catch (error) {
+    console.error('Gemini reflection questions error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/gemini/health-insights', async (req, res) => {
+  if (!geminiService) {
+    return res.status(503).json({ 
+      error: 'Gemini service not available. Please configure GEMINI_API_KEY.' 
+    });
+  }
+
+  try {
+    const { healthData } = req.body;
+    
+    if (!healthData) {
+      return res.status(400).json({ error: 'Health data is required' });
+    }
+
+    const insights = await geminiService.getHealthInsights(healthData);
+    res.json({ insights });
+  } catch (error) {
+    console.error('Gemini health insights error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/api/gemini/productivity-insights', async (req, res) => {
+  if (!geminiService) {
+    return res.status(503).json({ 
+      error: 'Gemini service not available. Please configure GEMINI_API_KEY.' 
+    });
+  }
+
+  try {
+    const { productivityData } = req.body;
+    
+    if (!productivityData) {
+      return res.status(400).json({ error: 'Productivity data is required' });
+    }
+
+    const insights = await geminiService.getProductivityInsights(productivityData);
+    res.json({ insights });
+  } catch (error) {
+    console.error('Gemini productivity insights error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/gemini/test', async (req, res) => {
+  if (!geminiService) {
+    return res.status(503).json({ 
+      error: 'Gemini service not available. Please configure GEMINI_API_KEY.' 
+    });
+  }
+
+  try {
+    const isConnected = await geminiService.testConnection();
+    res.json({ 
+      connected: isConnected,
+      message: isConnected ? 'Gemini API connection successful' : 'Gemini API connection failed'
+    });
+  } catch (error) {
+    console.error('Gemini test error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    geminiAvailable: !!geminiService
   });
 });
 

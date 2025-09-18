@@ -8,9 +8,10 @@ services:
       - "3001:3001"
     environment:
       - NODE_ENV=production
-      - MONGODB_URI=mongodb://mongo:27017/performance-demo
+      - MONGODB_URI=mongodb://mongo:27017/lifeos
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     depends_on:
       - mongo
       - redis
@@ -27,7 +28,7 @@ services:
     ports:
       - "27017:27017"
     environment:
-      - MONGO_INITDB_DATABASE=performance-demo
+      - MONGO_INITDB_DATABASE=lifeos
     volumes:
       - mongo_data:/data/db
       - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
