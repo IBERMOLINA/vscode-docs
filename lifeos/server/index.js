@@ -30,13 +30,17 @@ redisClient.on('error', (err) => {
   console.log('Redis Client Error', err);
 });
 
+// Initialize Redis connection (non-blocking)
+redisClient.connect().catch((err) => {
+  console.error('Redis Client Connection Error', err);
+});
+
 // MongoDB connection with optimizations
 mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/performance-demo', {
-  maxPoolSize: 10, // Maintain up to 10 socket connections
-  serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
-  socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
-  bufferMaxEntries: 0, // Disable mongoose buffering
-  bufferCommands: false, // Disable mongoose buffering
+  maxPoolSize: 10,
+  serverSelectionTimeoutMS: 5000,
+  socketTimeoutMS: 45000,
+  bufferCommands: false,
 });
 
 // Database schemas
@@ -63,23 +67,23 @@ const Product = mongoose.model('Product', productSchema);
 const cache = (duration = 300) => {
   return async (req, res, next) => {
     const key = `cache:${req.originalUrl}`;
-    
+
     try {
       const cached = await redisClient.get(key);
       if (cached) {
         return res.json(JSON.parse(cached));
       }
-      
+
       res.sendResponse = res.json;
       res.json = async (body) => {
         try {
-          await redisClient.setex(key, duration, JSON.stringify(body));
+          await redisClient.setEx(key, duration, JSON.stringify(body));
         } catch (err) {
           console.error('Redis cache setex error:', err);
         }
         res.sendResponse(body);
       };
-      
+
       next();
     } catch (error) {
       next();
@@ -110,9 +114,9 @@ app.post('/api/optimize-image', upload.single('image'), async (req, res) => {
     }
 
     const { width = 800, quality = 80, format = 'webp' } = req.body;
-    
+
     const optimizedImage = await sharp(req.file.buffer)
-      .resize(parseInt(width), null, { 
+      .resize(parseInt(width), null, {
         withoutEnlargement: true,
         fit: 'inside'
       })
@@ -147,7 +151,7 @@ app.get('/api/users', cache(300), async (req, res) => {
     ]);
 
     const total = await User.countDocuments();
-    
+
     res.json({
       users,
       pagination: {
@@ -188,7 +192,7 @@ app.get('/api/products', cache(300), async (req, res) => {
       .lean(); // Use lean() for better performance
 
     const total = await Product.countDocuments(query);
-    
+
     res.json({
       products,
       pagination: {
@@ -207,13 +211,13 @@ app.get('/api/products', cache(300), async (req, res) => {
 app.get('/api/search', cache(60), async (req, res) => {
   try {
     const { q, type = 'products' } = req.query;
-    
+
     if (!q || q.length < 2) {
       return res.json({ results: [] });
     }
 
     let results = [];
-    
+
     if (type === 'products') {
       // Use text search with regex for better performance
       results = await Product.find({
@@ -242,8 +246,8 @@ app.get('/api/search', cache(60), async (req, res) => {
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'OK', 
+  res.json({
+    status: 'OK',
     timestamp: new Date().toISOString(),
     uptime: process.uptime()
   });
@@ -264,10 +268,10 @@ app.get('*', (req, res) => {
 // Error handling middleware
 app.use((error, req, res, next) => {
   console.error('Error:', error);
-  res.status(500).json({ 
-    error: process.env.NODE_ENV === 'production' 
-      ? 'Internal server error' 
-      : error.message 
+  res.status(500).json({
+    error: process.env.NODE_ENV === 'production'
+      ? 'Internal server error'
+      : error.message
   });
 });
 
