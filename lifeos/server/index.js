@@ -1,3 +1,6 @@
+// Load environment variables early
+try { require('dotenv').config({ path: require('path').join(__dirname, '../.env') }); } catch {}
+
 const express = require('express');
 const compression = require('compression');
 const helmet = require('helmet');
@@ -136,6 +139,27 @@ app.post('/api/optimize-image', upload.single('image'), async (req, res) => {
     });
 
     res.send(optimizedImage);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Gemini test endpoint
+app.get('/api/gemini-test', async (req, res) => {
+  try {
+    const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'GEMINI_API_KEY not set' });
+    }
+
+    // Lazy require to avoid startup cost if not used
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
+    const genAI = new GoogleGenerativeAI(apiKey);
+    const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
+    const result = await model.generateContent('Reply with a short confirmation: "LifeOS Gemini test OK"');
+    const text = result.response && typeof result.response.text === 'function' ? result.response.text() : undefined;
+
+    res.json({ ok: true, model: 'gemini-2.0-flash', response: text });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
