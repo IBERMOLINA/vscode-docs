@@ -115,3 +115,13 @@ RUN sudo apt-get update && sudo apt-get install gnupg2 -y
 To apply your configuration changes, you need to rebuild the container. You can do this by running **Dev Containers: Rebuild Container** from the Command Palette (`F1`). The next time the container starts, your GPG keys should be accessible inside the container as well.
 
 >**Note**: If you used `gpg` previously in the container, you may need to run **Dev Containers: Rebuild Container** for the update to take effect.
+
+### GPG signature verification
+
+When working with repositories that have GPG-signed commits, you may encounter signature verification issues if the public keys are not available in your local keyring. This is normal behavior and doesn't affect the integrity of the code changes. If you need to verify signatures from external contributors, you can import their public keys using:
+
+```bash
+gpg --keyserver keyserver.ubuntu.com --recv-keys <KEY_ID>
+```
+
+Replace `<KEY_ID>` with the actual key ID shown in the verification error message.
