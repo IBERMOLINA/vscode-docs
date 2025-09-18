@@ -7,16 +7,79 @@ const redis = require('redis');
 const sharp = require('sharp');
 const multer = require('multer');
 const path = require('path');
+const rateLimit = require('express-rate-limit');
+const mongoSanitize = require('express-mongo-sanitize');
+const validator = require('validator');
+require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Security middleware
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true
+  },
+  frameguard: { action: 'deny' }, // X-Frame-Options
+  noSniff: true, // X-Content-Type-Options
+  xssFilter: true, // X-XSS-Protection
+  referrerPolicy: { policy: 'strict-origin-when-cross-origin' }
+}));
+
+// CORS configuration with specific origins
+const corsOptions = {
+  origin: process.env.NODE_ENV === 'production' 
+    ? process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3000']
+    : true,
+  credentials: true,
+  optionsSuccessStatus: 200
+};
+app.use(cors(corsOptions));
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 100, // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// Apply rate limiting to all routes
+app.use('/api/', limiter);
+
+// Stricter rate limiting for sensitive endpoints
+const strictLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  skipSuccessfulRequests: true,
+});
+
 // Performance optimizations
 app.use(compression()); // Enable gzip compression
-app.use(helmet()); // Security headers
-app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Body parsing with size limits
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+
+// MongoDB query sanitization
+app.use(mongoSanitize({
+  replaceWith: '_',
+  allowDots: false
+}));
+
+// Authentication routes
+app.use('/api/auth', authRoutes);
 
 // Redis cache setup
 const redisClient = redis.createClient({
@@ -43,25 +106,17 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/performan
 // Disable mongoose buffering at the library level to fail fast when DB is down
 mongoose.set('bufferCommands', false);
 
-// Database schemas
-const userSchema = new mongoose.Schema({
-  name: { type: String, required: true, index: true },
-  email: { type: String, required: true, unique: true, index: true },
-  avatar: String,
-  createdAt: { type: Date, default: Date.now, index: true }
-});
+// Import security middleware
+const { securityHeaders, securityLogger, authenticateToken } = require('./middleware/security');
+const authRoutes = require('./routes/auth');
 
-const productSchema = new mongoose.Schema({
-  name: { type: String, required: true, index: true },
-  description: String,
-  price: { type: Number, required: true, index: true },
-  category: { type: String, index: true },
-  images: [String],
-  createdAt: { type: Date, default: Date.now, index: true }
-});
+// Apply security headers and logging
+app.use(securityHeaders);
+app.use(securityLogger);
 
-const User = mongoose.model('User', userSchema);
-const Product = mongoose.model('Product', productSchema);
+// Import models
+const User = require('./models/User');
+const Product = require('./models/Product');
 
 // Cache middleware
 const cache = (duration = 300) => {
@@ -97,36 +152,57 @@ const cache = (duration = 300) => {
   };
 };
 
-// Image optimization middleware
+// Image optimization middleware with enhanced validation
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB limit
+    fileSize: parseInt(process.env.MAX_FILE_SIZE) || 5 * 1024 * 1024, // 5MB limit
+    files: 1,
+    fields: 10
   },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype.startsWith('image/')) {
-      cb(null, true);
+    // Validate file type
+    const allowedMimeTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    if (allowedMimeTypes.includes(file.mimetype)) {
+      // Additional check on file extension
+      const fileExt = path.extname(file.originalname).toLowerCase();
+      const allowedExts = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
+      if (allowedExts.includes(fileExt)) {
+        cb(null, true);
+      } else {
+        cb(new Error('Invalid file extension'), false);
+      }
     } else {
       cb(new Error('Only image files are allowed'), false);
     }
   }
 });
 
-// Optimize image endpoint
-app.post('/api/optimize-image', upload.single('image'), async (req, res) => {
+// Optimize image endpoint with rate limiting
+app.post('/api/optimize-image', strictLimiter, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No image provided' });
     }
 
-    const { width = 800, quality = 80, format = 'webp' } = req.body;
+    // Validate and sanitize input parameters
+    const width = Math.min(Math.max(parseInt(req.body.width) || 800, 10), 4000);
+    const quality = Math.min(Math.max(parseInt(req.body.quality) || 80, 1), 100);
+    const allowedFormats = ['webp', 'jpeg', 'png'];
+    const format = allowedFormats.includes(req.body.format) ? req.body.format : 'webp';
+
+    // Validate image buffer before processing
+    const metadata = await sharp(req.file.buffer).metadata();
+    if (metadata.width > 10000 || metadata.height > 10000) {
+      return res.status(400).json({ error: 'Image dimensions too large' });
+    }
 
     const optimizedImage = await sharp(req.file.buffer)
-      .resize(parseInt(width), null, {
+      .resize(width, null, {
         withoutEnlargement: true,
         fit: 'inside'
       })
-      .toFormat(format, { quality: parseInt(quality) })
+      .toFormat(format, { quality: quality })
       .toBuffer();
 
     res.set({
@@ -144,8 +220,9 @@ app.post('/api/optimize-image', upload.single('image'), async (req, res) => {
 // Optimized API endpoints with caching and pagination
 app.get('/api/users', cache(300), async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    // Validate and sanitize pagination parameters
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 20, 1), 100);
     const skip = (page - 1) * limit;
 
     // Use aggregation pipeline for better performance
@@ -174,12 +251,13 @@ app.get('/api/users', cache(300), async (req, res) => {
 
 app.get('/api/products', cache(300), async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
+    // Validate and sanitize parameters
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 20, 1), 100);
     const skip = (page - 1) * limit;
-    const category = req.query.category;
-    const minPrice = req.query.minPrice;
-    const maxPrice = req.query.maxPrice;
+    const category = req.query.category ? validator.escape(req.query.category) : undefined;
+    const minPrice = req.query.minPrice ? parseFloat(req.query.minPrice) : undefined;
+    const maxPrice = req.query.maxPrice ? parseFloat(req.query.maxPrice) : undefined;
 
     // Build query with indexes
     const query = {};
@@ -213,31 +291,35 @@ app.get('/api/products', cache(300), async (req, res) => {
   }
 });
 
-// Search endpoint with text indexing
+// Search endpoint with text indexing and input validation
 app.get('/api/search', cache(60), async (req, res) => {
   try {
-    const { q, type = 'products' } = req.query;
+    // Sanitize and validate search query
+    const q = req.query.q ? validator.escape(req.query.q.trim()) : '';
+    const type = ['products', 'users'].includes(req.query.type) ? req.query.type : 'products';
 
-    if (!q || q.length < 2) {
+    if (!q || q.length < 2 || q.length > 100) {
       return res.json({ results: [] });
     }
 
     let results = [];
 
     if (type === 'products') {
-      // Use text search with regex for better performance
+      // Use text search with escaped regex to prevent ReDoS
+      const escapedQuery = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       results = await Product.find({
         $or: [
-          { name: { $regex: q, $options: 'i' } },
-          { description: { $regex: q, $options: 'i' } }
+          { name: { $regex: escapedQuery, $options: 'i' } },
+          { description: { $regex: escapedQuery, $options: 'i' } }
         ]
       })
       .limit(10)
       .select('name description price category')
       .lean();
     } else if (type === 'users') {
+      const escapedQuery = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       results = await User.find({
-        name: { $regex: q, $options: 'i' }
+        name: { $regex: escapedQuery, $options: 'i' }
       })
       .limit(10)
       .select('name email avatar')
@@ -265,6 +347,22 @@ app.use('/static', express.static(path.join(__dirname, '../client/build/static')
   etag: true,
   lastModified: true
 }));
+
+// Protected admin endpoints (example)
+app.get('/api/admin/users', authenticateToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    const user = await User.findById(req.user.id);
+    if (!user || user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    const users = await User.find({}).select('-password');
+    res.json(users);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // Serve React app
 app.get('*', (req, res) => {
