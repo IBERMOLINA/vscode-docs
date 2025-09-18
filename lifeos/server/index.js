@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require('express');
 const compression = require('compression');
 const helmet = require('helmet');
@@ -7,9 +9,15 @@ const redis = require('redis');
 const sharp = require('sharp');
 const multer = require('multer');
 const path = require('path');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+
+// Initialize Gemini AI
+const genAI = process.env.GEMINI_API_KEY 
+  ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY)
+  : null;
 
 // Performance optimizations
 app.use(compression()); // Enable gzip compression
