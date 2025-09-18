@@ -258,12 +258,98 @@ app.get('/api/search', cache(60), async (req, res) => {
   }
 });
 
+// Gemini AI endpoint
+app.post('/api/gemini/generate', async (req, res) => {
+  try {
+    if (!genAI) {
+      return res.status(500).json({ 
+        error: 'Gemini AI is not configured. Please add GEMINI_API_KEY to your .env file.' 
+      });
+    }
+
+    const { prompt, model = 'gemini-pro', maxTokens = 1000 } = req.body;
+
+    if (!prompt) {
+      return res.status(400).json({ error: 'Prompt is required' });
+    }
+
+    // Initialize the model
+    const geminiModel = genAI.getGenerativeModel({ model });
+
+    // Generate content
+    const result = await geminiModel.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+
+    res.json({
+      success: true,
+      response: text,
+      model: model,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Gemini API Error:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate response',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
+// Gemini chat endpoint for conversational AI
+app.post('/api/gemini/chat', async (req, res) => {
+  try {
+    if (!genAI) {
+      return res.status(500).json({ 
+        error: 'Gemini AI is not configured. Please add GEMINI_API_KEY to your .env file.' 
+      });
+    }
+
+    const { messages, model = 'gemini-pro' } = req.body;
+
+    if (!messages || !Array.isArray(messages)) {
+      return res.status(400).json({ error: 'Messages array is required' });
+    }
+
+    // Initialize the model
+    const geminiModel = genAI.getGenerativeModel({ model });
+
+    // Start a chat session
+    const chat = geminiModel.startChat({
+      history: messages.slice(0, -1).map(msg => ({
+        role: msg.role === 'user' ? 'user' : 'model',
+        parts: [{ text: msg.content }]
+      }))
+    });
+
+    // Send the latest message
+    const lastMessage = messages[messages.length - 1];
+    const result = await chat.sendMessage(lastMessage.content);
+    const response = await result.response;
+    const text = response.text();
+
+    res.json({
+      success: true,
+      response: text,
+      model: model,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('Gemini Chat API Error:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate chat response',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
+  }
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'OK',
     timestamp: new Date().toISOString(),
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    geminiConfigured: !!genAI
   });
 });
 
