@@ -21,12 +21,13 @@ RUN npm run build
 # Production stage
 FROM node:18-alpine AS production
 
-# Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init
+# Install dumb-init for proper signal handling and security updates
+RUN apk add --no-cache dumb-init && \
+    apk upgrade --no-cache
 
 # Create app user for security
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S nextjs -u 1001
+RUN addgroup -g 1001 -S nodejs && \
+    adduser -S nextjs -u 1001
 
 # Set working directory
 WORKDIR /app
@@ -36,8 +37,10 @@ COPY --from=builder --chown=nextjs:nodejs /app/client/build ./client/build
 COPY --from=builder --chown=nextjs:nodejs /app/server ./server
 COPY --from=builder --chown=nextjs:nodejs /app/package*.json ./
 
-# Install only production dependencies
-RUN npm ci --only=production && npm cache clean --force
+# Install only production dependencies and remove npm cache
+RUN npm ci --only=production && \
+    npm cache clean --force && \
+    rm -rf /tmp/*
 
 # Switch to non-root user
 USER nextjs

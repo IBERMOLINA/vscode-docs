@@ -7,14 +7,61 @@ const redis = require('redis');
 const sharp = require('sharp');
 const multer = require('multer');
 const path = require('path');
+const rateLimit = require('express-rate-limit');
+const { body, query, param, validationResult } = require('express-validator');
+const mongoSanitize = require('express-mongo-sanitize');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Security middleware
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+    },
+  },
+  crossOriginEmbedderPolicy: false
+})); // Enhanced security headers
+
+// Rate limiting
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100, // limit each IP to 100 requests per windowMs
+  message: 'Too many requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const uploadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 10, // limit each IP to 10 uploads per windowMs
+  message: 'Too many upload requests from this IP, please try again later.',
+});
+
+// Apply rate limiting to API routes
+app.use('/api/', apiLimiter);
+
+// CORS configuration with specific origins
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',') 
+  : ['http://localhost:3000', 'http://localhost:3001'];
+
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true,
+  optionsSuccessStatus: 200
+}));
+
 // Performance optimizations
 app.use(compression()); // Enable gzip compression
-app.use(helmet()); // Security headers
-app.use(cors());
+
+// Sanitize user input against NoSQL injection attacks
+app.use(mongoSanitize());
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -23,19 +70,22 @@ const redisClient = redis.createClient({
   socket: {
     host: process.env.REDIS_HOST || 'localhost',
     port: process.env.REDIS_PORT ? parseInt(process.env.REDIS_PORT, 10) : 6379
-  }
+  },
+  password: process.env.REDIS_PASSWORD
 });
 
 redisClient.on('error', (err) => {
   console.log('Redis Client Error', err);
 });
 
-// MongoDB connection with optimizations
-// Note: bufferMaxEntries was removed in modern Mongo drivers; using supported options only
-mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/performance-demo', {
+// MongoDB connection with optimizations and authentication
+const mongoUri = process.env.MONGODB_URI || 'mongodb://localhost:27017/performance-demo';
+mongoose.connect(mongoUri, {
   maxPoolSize: 10,
   serverSelectionTimeoutMS: 5000,
-  socketTimeoutMS: 45000
+  socketTimeoutMS: 45000,
+  retryWrites: true,
+  w: 'majority'
 }).catch((err) => {
   console.error('MongoDB initial connect error:', err.message);
 });
@@ -112,8 +162,37 @@ const upload = multer({
   }
 });
 
+// Input validation middleware
+const validateImageOptimization = [
+  body('width').optional().isInt({ min: 1, max: 4000 }).withMessage('Width must be between 1 and 4000 pixels'),
+  body('quality').optional().isInt({ min: 1, max: 100 }).withMessage('Quality must be between 1 and 100'),
+  body('format').optional().isIn(['webp', 'jpeg', 'png']).withMessage('Format must be webp, jpeg, or png'),
+];
+
+const validatePagination = [
+  query('page').optional().isInt({ min: 1 }).withMessage('Page must be a positive integer'),
+  query('limit').optional().isInt({ min: 1, max: 100 }).withMessage('Limit must be between 1 and 100'),
+];
+
+const validateSearch = [
+  query('q').isLength({ min: 2, max: 100 }).withMessage('Search query must be between 2 and 100 characters'),
+  query('type').optional().isIn(['products', 'users']).withMessage('Type must be products or users'),
+];
+
+// Validation error handler
+const handleValidationErrors = (req, res, next) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    return res.status(400).json({ 
+      error: 'Validation failed',
+      details: errors.array()
+    });
+  }
+  next();
+};
+
 // Optimize image endpoint
-app.post('/api/optimize-image', upload.single('image'), async (req, res) => {
+app.post('/api/optimize-image', uploadLimiter, upload.single('image'), validateImageOptimization, handleValidationErrors, async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No image provided' });
@@ -142,7 +221,7 @@ app.post('/api/optimize-image', upload.single('image'), async (req, res) => {
 });
 
 // Optimized API endpoints with caching and pagination
-app.get('/api/users', cache(300), async (req, res) => {
+app.get('/api/users', validatePagination, handleValidationErrors, cache(300), async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
@@ -172,7 +251,7 @@ app.get('/api/users', cache(300), async (req, res) => {
   }
 });
 
-app.get('/api/products', cache(300), async (req, res) => {
+app.get('/api/products', validatePagination, handleValidationErrors, cache(300), async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 20;
@@ -214,7 +293,7 @@ app.get('/api/products', cache(300), async (req, res) => {
 });
 
 // Search endpoint with text indexing
-app.get('/api/search', cache(60), async (req, res) => {
+app.get('/api/search', validateSearch, handleValidationErrors, cache(60), async (req, res) => {
   try {
     const { q, type = 'products' } = req.query;
 
@@ -224,12 +303,15 @@ app.get('/api/search', cache(60), async (req, res) => {
 
     let results = [];
 
+    // Escape special regex characters to prevent ReDoS attacks
+    const escapedQuery = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
     if (type === 'products') {
-      // Use text search with regex for better performance
+      // Use text search with escaped regex for security
       results = await Product.find({
         $or: [
-          { name: { $regex: q, $options: 'i' } },
-          { description: { $regex: q, $options: 'i' } }
+          { name: { $regex: escapedQuery, $options: 'i' } },
+          { description: { $regex: escapedQuery, $options: 'i' } }
         ]
       })
       .limit(10)
@@ -237,7 +319,7 @@ app.get('/api/search', cache(60), async (req, res) => {
       .lean();
     } else if (type === 'users') {
       results = await User.find({
-        name: { $regex: q, $options: 'i' }
+        name: { $regex: escapedQuery, $options: 'i' }
       })
       .limit(10)
       .select('name email avatar')
