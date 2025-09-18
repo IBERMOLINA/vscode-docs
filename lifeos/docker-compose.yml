@@ -11,6 +11,7 @@ services:
       - MONGODB_URI=mongodb://mongo:27017/performance-demo
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
     depends_on:
       - mongo
       - redis
