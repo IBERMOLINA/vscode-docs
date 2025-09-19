@@ -37,5 +37,9 @@
         "bash": {
             "path": "/bin/bash"
         }
+    },
+    "terminal.integrated.env.linux": {
+        "DOTNET_ROOT": "/workspaces/vscode-docs/LifeMtrics-buildsetup/.dotnet",
+        "PATH": "/workspaces/vscode-docs/LifeMtrics-buildsetup/.dotnet:${env:PATH}"
     }
 }
